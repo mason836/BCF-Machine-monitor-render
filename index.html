@@ -1,0 +1,266 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>OEE Data Logger</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app">
+    <!-- HEADER -->
+    <div class="hdr">
+      <div class="brand">
+        <div class="brand-icon">⚙️</div>
+        <div>
+          <div class="brand-name">OEE Logger</div>
+          <div class="brand-line">Arduino ESP32</div>
+        </div>
+      </div>
+      <div class="status-block">
+        <div class="status-badge running" id="statusBadge">
+          <span class="status-dot run" id="statusDot"></span>
+          <span id="statusText">LOADING</span>
+        </div>
+        <div class="status-since" id="statusTime">--</div>
+      </div>
+    </div>
+
+    <!-- NAV -->
+    <div class="nav">
+      <div class="nav-tab active" onclick="switchTab('overview')">Overview</div>
+      <div class="nav-tab" onclick="switchTab('logs')">Logs</div>
+      <div class="nav-tab" onclick="switchTab('settings')">Settings</div>
+    </div>
+
+    <!-- PANELS -->
+    
+    <!-- OVERVIEW PANEL -->
+    <div class="panel active" id="overview">
+      <div class="metric-row">
+        <div class="mcard">
+          <div class="mcard-label">Status</div>
+          <div class="mcard-val" id="metricStatus">--</div>
+        </div>
+        <div class="mcard">
+          <div class="mcard-label">Runtime (min)</div>
+          <div class="mcard-val" id="metricRuntime">0</div>
+        </div>
+        <div class="mcard">
+          <div class="mcard-label">Last Update</div>
+          <div class="mcard-val" id="metricUpdate">--</div>
+          <div class="mcard-sub" id="metricUpdateSub">Just now</div>
+        </div>
+        <div class="mcard">
+          <div class="mcard-label">Arduino IP</div>
+          <div class="mcard-val" style="font-size:14px;" id="metricIP">--</div>
+        </div>
+      </div>
+
+      <div class="op-bar">
+        <div class="op-bar-left">
+          <div>
+            <div class="op-label">Current Session</div>
+            <div class="op-name" id="sessionTime">00:00:00</div>
+          </div>
+        </div>
+        <button class="btn-pri" onclick="fetchData()">Refresh Now</button>
+      </div>
+
+      <div style="padding: 0 20px;">
+        <h3 style="margin-bottom: 12px;">Today's Log</h3>
+        <div class="tbl-wrap" id="logContainer">
+          <p style="padding: 20px; text-align: center; color: var(--sub);">Loading logs...</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- LOGS PANEL -->
+    <div class="panel" id="logs">
+      <div style="padding: 20px;">
+        <h3>Download Logs</h3>
+        <div style="margin-top: 16px; display: flex; gap: 10px;">
+          <a href="" class="btn-sm btn-pri" id="downloadToday">📥 Today's Log</a>
+          <a href="" class="btn-sm" id="downloadYesterday">📥 Yesterday's Log</a>
+        </div>
+        <div style="margin-top: 20px; padding: 16px; background: var(--surface); border-radius: 8px; border: 1px solid var(--border);">
+          <p style="color: var(--sub); font-size: 12px;">Logs are stored as CSV files on the SD card. Auto-rotates daily at midnight.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- SETTINGS PANEL -->
+    <div class="panel" id="settings">
+      <div style="padding: 20px;">
+        <div class="set-sec">
+          <div class="set-title">Arduino Configuration</div>
+          <div class="set-row">
+            <div>
+              <div class="set-lbl">Arduino IP Address</div>
+              <div class="set-sub">Used to fetch live data</div>
+            </div>
+            <input type="text" id="arduinoIP" placeholder="192.168.x.x" style="width: 200px; padding: 8px; border-radius: 6px; border: 1px solid var(--border2); background: var(--surface); color: var(--text);">
+          </div>
+          <div class="set-row">
+            <div>
+              <div class="set-lbl">Fetch Interval</div>
+              <div class="set-sub">Seconds between updates</div>
+            </div>
+            <input type="number" id="fetchInterval" value="10" min="5" max="60" style="width: 100px; padding: 8px; border-radius: 6px; border: 1px solid var(--border2); background: var(--surface); color: var(--text);">
+          </div>
+          <div class="set-row">
+            <button class="btn-pri" onclick="saveSettings()">Save Settings</button>
+            <button class="btn-sm" onclick="resetSettings()">Reset to Default</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script>
+    // Configuration
+    let config = {
+      arduinoIP: localStorage.getItem('arduinoIP') || 'http://192.168.1.100',
+      fetchInterval: parseInt(localStorage.getItem('fetchInterval')) || 10000
+    };
+
+    let lastUpdate = null;
+    let sessionStartTime = null;
+    let sessionRuntime = 0;
+
+    // Initialize
+    document.addEventListener('DOMContentLoaded', () => {
+      document.getElementById('arduinoIP').value = config.arduinoIP;
+      document.getElementById('fetchInterval').value = config.fetchInterval / 1000;
+      document.getElementById('downloadToday').href = config.arduinoIP + '/today';
+      document.getElementById('downloadYesterday').href = config.arduinoIP + '/yesterday';
+      
+      fetchData();
+      setInterval(fetchData, config.fetchInterval);
+      setInterval(updateSessionTime, 1000);
+    });
+
+    function fetchData() {
+      const url = config.arduinoIP + '/data';
+      
+      fetch(url)
+        .then(res => res.json())
+        .then(data => {
+          lastUpdate = new Date();
+          updateUI(data);
+          fetchLogs();
+        })
+        .catch(err => {
+          console.error('Fetch failed:', err);
+          document.getElementById('statusBadge').className = 'status-badge stopped';
+          document.getElementById('statusDot').className = 'status-dot stp';
+          document.getElementById('statusText').textContent = 'OFFLINE';
+          document.getElementById('metricStatus').textContent = 'Offline';
+        });
+    }
+
+    function updateUI(data) {
+      const isRunning = data.status === 'RUNNING';
+      const statusClass = isRunning ? 'running' : 'stopped';
+      const dotClass = isRunning ? 'run' : 'stp';
+
+      document.getElementById('statusBadge').className = 'status-badge ' + statusClass;
+      document.getElementById('statusDot').className = 'status-dot ' + dotClass;
+      document.getElementById('statusText').textContent = data.status;
+      document.getElementById('metricStatus').textContent = data.status;
+      document.getElementById('metricRuntime').textContent = data.runtimeMinutes;
+      document.getElementById('metricIP').textContent = data.ip;
+
+      // Update time
+      const timeStr = lastUpdate.toLocaleTimeString();
+      document.getElementById('metricUpdate').textContent = lastUpdate.toLocaleTimeString('en-US', {hour: '2-digit', minute: '2-digit'});
+      document.getElementById('metricUpdateSub').textContent = 'Just now';
+
+      // Session time
+      if(isRunning && !sessionStartTime) {
+        sessionStartTime = Date.now();
+      } else if(!isRunning) {
+        sessionStartTime = null;
+      }
+    }
+
+    function updateSessionTime() {
+      if(sessionStartTime) {
+        const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+        const hours = Math.floor(elapsed / 3600);
+        const mins = Math.floor((elapsed % 3600) / 60);
+        const secs = elapsed % 60;
+        document.getElementById('sessionTime').textContent = 
+          String(hours).padStart(2, '0') + ':' + 
+          String(mins).padStart(2, '0') + ':' + 
+          String(secs).padStart(2, '0');
+      }
+    }
+
+    function fetchLogs() {
+      const url = config.arduinoIP + '/today';
+      
+      fetch(url)
+        .then(res => res.text())
+        .then(csv => {
+          const lines = csv.trim().split('\n');
+          let html = '<table>';
+          html += '<tr><th>Date</th><th>Time</th><th>Status</th></tr>';
+          
+          lines.forEach(line => {
+            const parts = line.split(',');
+            if(parts.length >= 3) {
+              html += '<tr>';
+              html += '<td>' + parts[0] + '</td>';
+              html += '<td>' + parts[1] + '</td>';
+              html += '<td><span class="badge ' + (parts[2].trim() === 'RUNNING' ? 'b-run' : 'b-stop') + '">' + parts[2].trim() + '</span></td>';
+              html += '</tr>';
+            }
+          });
+          
+          html += '</table>';
+          document.getElementById('logContainer').innerHTML = html;
+        })
+        .catch(err => {
+          console.error('Log fetch failed:', err);
+          document.getElementById('logContainer').innerHTML = '<p style="padding: 20px; text-align: center; color: var(--sub);">Error loading logs</p>';
+        });
+    }
+
+    function switchTab(tab) {
+      document.querySelectorAll('.panel').forEach(p => p.classList.remove('active'));
+      document.querySelectorAll('.nav-tab').forEach(t => t.classList.remove('active'));
+      
+      document.getElementById(tab).classList.add('active');
+      event.target.classList.add('active');
+    }
+
+    function saveSettings() {
+      config.arduinoIP = document.getElementById('arduinoIP').value;
+      config.fetchInterval = parseInt(document.getElementById('fetchInterval').value) * 1000;
+      
+      localStorage.setItem('arduinoIP', config.arduinoIP);
+      localStorage.setItem('fetchInterval', config.fetchInterval);
+      
+      document.getElementById('downloadToday').href = config.arduinoIP + '/today';
+      document.getElementById('downloadYesterday').href = config.arduinoIP + '/yesterday';
+      
+      alert('Settings saved! Will use new Arduino IP on next refresh.');
+    }
+
+    function resetSettings() {
+      config.arduinoIP = 'http://192.168.1.100';
+      config.fetchInterval = 10000;
+      
+      localStorage.removeItem('arduinoIP');
+      localStorage.removeItem('fetchInterval');
+      
+      document.getElementById('arduinoIP').value = config.arduinoIP;
+      document.getElementById('fetchInterval').value = 10;
+      
+      alert('Settings reset to default.');
+    }
+  </script>
+</body>
+</html>
